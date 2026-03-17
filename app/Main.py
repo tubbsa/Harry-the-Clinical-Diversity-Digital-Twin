@@ -29,7 +29,7 @@ from src.bandit import bandit_optimize
 from src.scoring_constants import DISEASE_PREVALENCE
 from src.scoring_constants import DISEASE_PREVALENCE, SEX_BURDEN_MORTALITY
 from src.clinical_reporter import build_llm_report
-
+from src.nfrules import recommend_nf, __version__ as nf_version
 
 
 
@@ -140,7 +140,7 @@ if page == "Main":
 
         st.subheader("Recommended Actions")
         st.write(nf_actions + bandit_actions)
-
+        st.caption(f"Policy layer version: {nf_version}")
         # -------------------------
         # Report payload
         # -------------------------
