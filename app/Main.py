@@ -133,7 +133,7 @@ if page == "Main":
         # Recommendations
         # -------------------------
         preds_with_score = preds.copy()
-        preds_with_score["icer_score"] = total_score
+        preds_with_score["icer_score"] = (total_score / 21.0) * 100.0
 
         nf_actions = recommend_nf(payload, preds_with_score)
         bandit_actions = bandit_optimize(payload, preds_with_score)
