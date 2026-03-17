@@ -106,7 +106,7 @@ from .scoring_constants import (
     AGE_GROUPS,
 )
 
-
+__version__ = "2.0.0-shap-evidence-based"
 # ------------------------------------------------------------
 # Evidence-based PDRR thresholds
 # ------------------------------------------------------------
