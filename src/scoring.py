@@ -2,12 +2,32 @@
 # scoring.py — Bidirectional ICER-Style Equity Scoring + 0–100
 # Diversity Score + Shortfall Analysis
 # FINAL PRODUCTION VERSION (BUGFIX ONLY)
+#
+# Sex domain reference change (v2):
+#   Previously used DISEASE_PREVALENCE for sex (female: 5.8%,
+#   male: 7.8%). Because these are condition prevalence rates
+#   rather than population sex proportions, any realistic
+#   enrollment split produced PDRRs far above 1.0, placing all
+#   configurations outside the scoring bands and yielding a
+#   sex domain score of 0/6 in every case.
+#
+#   The sex domain now uses SEX_BURDEN_MORTALITY as the default
+#   reference (female: 52.6%, male: 47.4%), derived from the
+#   share of U.S. cardiovascular deaths by sex (Mosca et al.,
+#   Circulation 2011). This reference produces PDRRs near 1.0
+#   for typical enrollment splits, making the sex score
+#   sensitive to actual trial design decisions.
+#
+#   The burden_override parameter is retained for
+#   backward compatibility and can still be used to pass
+#   an alternative reference if needed.
 # ============================================================
 
 import pandas as pd
 
 from .scoring_constants import (
     DISEASE_PREVALENCE,
+    SEX_BURDEN_MORTALITY,
     RACE_GROUPS,
     SEX_GROUPS,
     AGE_GROUPS,
@@ -77,6 +97,9 @@ def compute_icer_score(preds: dict, meta: dict = None, burden_override: dict = N
     # -------------------------
     # SEX DOMAIN = 6 max
     # -------------------------
+    # Default reference: SEX_BURDEN_MORTALITY (cardiovascular
+    # mortality share by sex, Mosca et al. 2011).
+    # burden_override can supply an alternative reference if needed.
     sex_scores = []
 
     for key in SEX_GROUPS:
@@ -85,7 +108,7 @@ def compute_icer_score(preds: dict, meta: dict = None, burden_override: dict = N
         if burden_override is not None and key in burden_override:
             denom = burden_override[key]
         else:
-            denom = DISEASE_PREVALENCE[key]
+            denom = SEX_BURDEN_MORTALITY[key]
 
         # ---- BUGFIX ----
         if trial_val is None or denom <= 0:
