@@ -138,7 +138,7 @@ def _coerce_int_like(x: Any) -> Any:
 
 def make_pdrr_bar_chart(
     breakdown: Union[pd.DataFrame, Dict[str, Any]],
-    threshold: float = 0.8,
+    threshold: float = 1.0,
 ) -> go.Figure:
     df = _to_dataframe(breakdown)
     group_col = _find_group_column(df)
@@ -282,8 +282,8 @@ def make_pdrr_bar_chart(
             dict(
                 text=(
                     "Predicted enrollment compared to U.S. population reference. "
-                    "PDRR = enrollment ÷ reference (1.0 = parity). "
-                    "Orange bars indicate under-representation."
+                    "PDRR = enrollment / reference (1.0 = parity). "
+                    "Orange bars indicate under-representation (PDRR < 1.0)."
                 ),
                 xref="paper",
                 yref="paper",
