@@ -1,5 +1,5 @@
 # ============================================================
-# pdrr_chart.py — PDRR bar chart (Trial / Disease Prevalence)
+# pdrr_chart.py — PDRR bar chart (Enrollment vs Population Reference)
 # DASHBOARD-READY, NONE-SAFE
 # ============================================================
 
@@ -37,6 +37,16 @@ DEMO_MAP = {
     6: "Age 65+",
 }
 
+# Reference column name — updated from disease_prevalence to population_reference
+REFERENCE_COL_CANDIDATES = [
+    "population_reference",
+    "disease_prevalence",   # backward compat
+    "prev_frac",
+    "prevalence",
+    "disease_prev",
+    "prev_pct",
+]
+
 
 def _to_dataframe(breakdown: Union[pd.DataFrame, Dict[str, Any]]) -> pd.DataFrame:
     if isinstance(breakdown, pd.DataFrame):
@@ -52,39 +62,64 @@ def _to_dataframe(breakdown: Union[pd.DataFrame, Dict[str, Any]]) -> pd.DataFram
 
 
 def _find_group_column(df: pd.DataFrame) -> str:
-    for cand in ["group", "subgroup", "category", "label"]:
+    for cand in ["component", "group", "subgroup", "category", "label"]:
         if cand in df.columns:
             return cand
     df["group"] = df.index.astype(str)
     return "group"
 
 
+def _find_reference_column(df: pd.DataFrame) -> str | None:
+    for cand in REFERENCE_COL_CANDIDATES:
+        if cand in df.columns:
+            return cand
+    return None
+
+
+def _find_value_column(df: pd.DataFrame) -> str | None:
+    for cand in ["value", "trial_frac", "trial", "pred_frac", "predicted", "trial_pct"]:
+        if cand in df.columns:
+            return cand
+    return None
+
+
 def _ensure_pdrr_column(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["pdrr", "PDRR", "pdr_ratio", "pdrr_ratio"]:
         if c in df.columns:
-            df["pdrr"] = df[c].astype(float)
+            df["pdrr"] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
             return df
 
-    trial_candidates = ["trial_frac", "trial", "pred_frac", "predicted", "trial_pct"]
-    prev_candidates = ["prev_frac", "prevalence", "disease_prev", "prev_pct"]
-
-    trial_col = next((c for c in trial_candidates if c in df.columns), None)
-    prev_col = next((c for c in prev_candidates if c in df.columns), None)
+    trial_col = _find_value_column(df)
+    prev_col  = _find_reference_column(df)
 
     if trial_col and prev_col:
         df["pdrr"] = (
-            df[trial_col].astype(float)
-            / df[prev_col].replace(0, np.nan).astype(float)
+            pd.to_numeric(df[trial_col], errors="coerce")
+            / pd.to_numeric(df[prev_col], errors="coerce").replace(0, np.nan)
         ).fillna(0.0)
         return df
 
-    # Neutral fallback so chart still renders
     df["pdrr"] = 1.0
     return df
 
 
+def _parse_pct_string(x: Any) -> float:
+    """Convert '74.8%' or 0.748 or None to a 0-1 float."""
+    if x is None:
+        return 0.0
+    if isinstance(x, (int, float)):
+        v = float(x)
+        # If already a proportion (0-1 range) leave it; if >1 assume already percentage
+        return v / 100.0 if v > 1.5 else v
+    s = str(x).strip().rstrip("%")
+    try:
+        v = float(s)
+        return v / 100.0 if v > 1.5 else v
+    except ValueError:
+        return 0.0
+
+
 def _coerce_int_like(x: Any) -> Any:
-    """Convert int-like values (e.g., '3', 3.0) to int; otherwise return as-is."""
     if x is None:
         return x
     if isinstance(x, (int, np.integer)):
@@ -109,26 +144,22 @@ def make_pdrr_bar_chart(
     group_col = _find_group_column(df)
     df = _ensure_pdrr_column(df)
 
+    # Find value and reference columns
+    value_col = _find_value_column(df)
+    ref_col   = _find_reference_column(df)
+
     # -----------------------------
-    # Human-readable labels (display-only)
+    # Human-readable labels
     # -----------------------------
     def prettify_label(g: Any) -> str:
-        # 0) External labels override if your app defines them
-        # (Keeps existing behavior but doesn’t break numeric mapping)
         if g in DISPLAY_LABELS:
             return str(DISPLAY_LABELS[g])
-
-        # 1) numeric demographic codes -> readable
         gi = _coerce_int_like(g)
         if isinstance(gi, int) and gi in DEMO_MAP:
-            return f"{DEMO_MAP[gi]} %"
-
-        # 2) known snake_case percent keys -> friendly labels
+            return DEMO_MAP[gi]
         gs = str(g)
         if gs in RENAME_MAP:
-            return RENAME_MAP[gs]
-
-        # 3) fallback normalization (handles 'white_pct', 'age65', etc.)
+            return RENAME_MAP[gs].replace(" %", "")
         base = gs.replace("_pct", "").replace("_", " ").lower()
         mapping = {
             "white": "White",
@@ -138,90 +169,131 @@ def make_pdrr_bar_chart(
             "male": "Male",
             "age65": "Age 65+",
             "age 65": "Age 65+",
-            "aian": "American Indian / Alaska Native",
-            "american indian alaska native": "American Indian / Alaska Native",
+            "aian": "AIAN",
+            "american indian alaska native": "AIAN",
         }
-        label = mapping.get(base, base.title())
-        # If the thing already looks like a percent label, add %; otherwise don’t force it.
-        return f"{label} %"
+        return mapping.get(base, base.title())
 
     df["display_label"] = df[group_col].apply(prettify_label)
 
-    # Sort by PDRR (under-represented first)
+    # Sort by PDRR ascending (most under-represented first)
     df = df.sort_values("pdrr").reset_index(drop=True)
 
     x_labels = df["display_label"].tolist()
-    ymax = max(1.2, np.ceil(df["pdrr"].max() * 10) / 10)
 
-    colors = np.where(df["pdrr"] < threshold, "#D55E00", "#4C72B0")
+    # Parse enrollment and reference as proportions
+    if value_col:
+        enrollment = [_parse_pct_string(v) for v in df[value_col]]
+    else:
+        enrollment = [float(p) for p in df["pdrr"]]  # fallback
+
+    if ref_col:
+        reference = [_parse_pct_string(v) for v in df[ref_col]]
+    else:
+        reference = [1.0 / len(df)] * len(df)  # fallback uniform
+
+    pdrr_vals = df["pdrr"].tolist()
+
+    # Color enrollment bars: orange if under-represented, blue if at/above parity
+    enroll_colors = [
+        "#D55E00" if p < threshold else "#4C72B0"
+        for p in pdrr_vals
+    ]
 
     fig = go.Figure()
+
+    # --- Bar 1: Enrollment % ---
     fig.add_bar(
+        name="Predicted Enrollment",
         x=x_labels,
-        y=df["pdrr"].tolist(),
-        marker_color=colors,
-        text=[f"{v:.2f}" for v in df["pdrr"]],
+        y=[v * 100 for v in enrollment],
+        marker_color=enroll_colors,
+        text=[f"{v*100:.1f}%" for v in enrollment],
         textposition="outside",
-        hovertemplate="<b>%{x}</b><br>Enrollment ÷ Disease Prevalence: %{y:.2f}<extra></extra>",
-        showlegend=False,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Predicted enrollment: %{y:.1f}%<extra></extra>"
+        ),
     )
 
-    # Equity threshold line
-    fig.add_hline(
-        y=threshold,
-        line_dash="dash",
-        line_width=2,
-        line_color="#333333",
-        annotation_text=f"Equity threshold ({threshold})",
-        annotation_position="top left",
-        annotation_font_size=12,
+    # --- Bar 2: Population reference % ---
+    fig.add_bar(
+        name="Population Reference",
+        x=x_labels,
+        y=[v * 100 for v in reference],
+        marker_color="rgba(100, 100, 100, 0.35)",
+        marker_line=dict(color="rgba(100,100,100,0.6)", width=1),
+        text=[f"{v*100:.1f}%" for v in reference],
+        textposition="outside",
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Population reference: %{y:.1f}%<extra></extra>"
+        ),
     )
+
+    # --- PDRR annotation above each group ---
+    max_y = max(max(v * 100 for v in enrollment), max(v * 100 for v in reference))
+    annotation_y = max_y * 1.18
+
+    for i, (label, pdrr) in enumerate(zip(x_labels, pdrr_vals)):
+        color = "#D55E00" if pdrr < threshold else "#2a6496"
+        fig.add_annotation(
+            x=label,
+            y=annotation_y,
+            text=f"PDRR: {pdrr:.2f}",
+            showarrow=False,
+            font=dict(size=11, color=color, family="Arial"),
+            bgcolor="rgba(255,255,255,0.7)",
+            borderpad=2,
+        )
 
     fig.update_layout(
+        barmode="group",
+        bargap=0.20,
+        bargroupgap=0.05,
         title=dict(
-            text="Enrollment Relative to Disease Burden (PDRR)",
-            font=dict(size=20),
+            text="Enrollment vs. Population Reference by Demographic Group",
+            font=dict(size=18),
             pad=dict(b=12),
         ),
         xaxis=dict(
             title="Demographic Group",
             type="category",
-            tickangle=30,
+            tickangle=20,
             tickfont=dict(size=12),
         ),
         yaxis=dict(
-            title="Enrollment Relative to Disease Burden",
-            range=[0, ymax],
+            title="Percentage (%)",
+            range=[0, annotation_y * 1.12],
+            ticksuffix="%",
             tickfont=dict(size=12),
         ),
-        margin=dict(l=60, r=40, t=130, b=80),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=12),
+        ),
+        margin=dict(l=60, r=40, t=140, b=80),
         template="plotly_white",
         annotations=[
             dict(
                 text=(
-                    "Compares predicted trial enrollment to disease prevalence for each demographic group. "
-                    "Values below the equity threshold indicate under-representation."
+                    "Predicted enrollment compared to U.S. population reference. "
+                    "PDRR = enrollment ÷ reference (1.0 = parity). "
+                    "Orange bars indicate under-representation."
                 ),
                 xref="paper",
                 yref="paper",
                 x=0,
-                y=1.10,
+                y=1.13,
                 showarrow=False,
                 align="left",
-                font=dict(size=13, color="#555"),
-            ),
-            dict(
-                text="Orange = under-represented • Blue = adequately represented",
-                xref="paper",
-                yref="paper",
-                x=1,
-                y=1.10,
-                showarrow=False,
-                align="right",
                 font=dict(size=12, color="#555"),
             ),
         ],
     )
 
     return fig
-
