@@ -43,7 +43,7 @@ def render_score_tiles(total_score, breakdown):
         )
     with c3:
         st.markdown(
-            f'<div class="{sex_style}"><strong>Gender:</strong> \
+            f'<div class="{sex_style}"><strong>Sex:</strong> \
             {sex_score:.1f} / 6<br><em>{sex_label}</em></div>',
             unsafe_allow_html=True,
         )
