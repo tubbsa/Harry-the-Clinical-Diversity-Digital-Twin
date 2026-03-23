@@ -1,8 +1,7 @@
 # ============================================================
-# rep_prev_diverging.py — Δ (Trial − Prevalence) Comparison Chart
+# rep_prev_diverging.py — Δ (Trial − Population Reference) Chart
 # CLEAN, SORTED, DASHBOARD-READY
 # ============================================================
-
 import plotly.graph_objects as go
 from utils.constants import DISPLAY_LABELS
 
@@ -18,29 +17,24 @@ ORDERED_GROUPS = [
 ]
 
 
-def make_rep_prev_diverging(preds_frac: dict, disease_prev: dict):
+def make_rep_prev_diverging(preds_frac: dict, population_ref: dict):
     """
     Create a diverging bar chart showing:
-        Δ = Trial − Disease Prevalence  (percentage points)
-
-    - Uses fractions (0–1) internally
+        Delta = Trial enrollment - Population reference (percentage points)
+    - Uses fractions (0-1) internally
     - Displays signed percentage-point differences
     - Skips groups with missing data
-    - Sorts by absolute Δ (largest gaps first)
+    - Sorts by absolute Delta (largest gaps first)
+    - Orange = under-represented (below population reference)
+    - Green = over-represented (above population reference)
     """
-
     rows = []
-
     for g in ORDERED_GROUPS:
         pred = preds_frac.get(g)
-        prev = disease_prev.get(g)
-
-        # Skip missing values (prevents artifacts)
-        if pred is None or prev is None:
+        ref  = population_ref.get(g)
+        if pred is None or ref is None:
             continue
-
-        delta_pp = (pred - prev) * 100
-
+        delta_pp = (pred - ref) * 100
         rows.append(
             {
                 "group": DISPLAY_LABELS.get(g, g),
@@ -57,7 +51,6 @@ def make_rep_prev_diverging(preds_frac: dict, disease_prev: dict):
     colors = [r["color"] for r in rows]
 
     fig = go.Figure()
-
     fig.add_bar(
         y=labels,
         x=deltas,
@@ -67,13 +60,12 @@ def make_rep_prev_diverging(preds_frac: dict, disease_prev: dict):
         textposition="outside",
         hovertemplate=(
             "<b>%{y}</b><br>"
-            "Δ (Trial − Prevalence): %{x:+.1f} pp"
+            "Enrollment vs. population reference: %{x:+.1f} pp"
             "<extra></extra>"
         ),
-        name="Δ (Trial − Prevalence)",
+        name="Delta (Trial - Population Reference)",
     )
 
-    # Zero reference line
     fig.add_vline(
         x=0,
         line_width=2,
@@ -83,7 +75,7 @@ def make_rep_prev_diverging(preds_frac: dict, disease_prev: dict):
 
     fig.update_layout(
         title=dict(
-            text="Representation vs Disease Prevalence (Δ)",
+            text="Representation vs Population Reference (Delta)",
             font=dict(size=20),
         ),
         xaxis=dict(
@@ -99,7 +91,7 @@ def make_rep_prev_diverging(preds_frac: dict, disease_prev: dict):
         margin=dict(l=120, r=40, t=70, b=40),
         annotations=[
             dict(
-                text="Positive values indicate over-representation; negative values indicate under-representation.",
+                text="Positive values indicate over-representation relative to U.S. population share; negative values indicate under-representation.",
                 xref="paper",
                 yref="paper",
                 x=0,
@@ -109,5 +101,4 @@ def make_rep_prev_diverging(preds_frac: dict, disease_prev: dict):
             )
         ],
     )
-
     return fig
