@@ -18,20 +18,16 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 # ------------------------------------------------------------
-# IMPORTS (MATCH YOUR CURRENT FOLDERS)
+# IMPORTS
 # ------------------------------------------------------------
 # ML + Scoring
 from src.predictor import predict_proportions
 from src.scoring import compute_icer_score
 from src.narrative import build_narrative
-from src.nfrules import recommend_nf
+from src.nfrules import recommend_nf, __version__ as nf_version
 from src.bandit import bandit_optimize
 from src.scoring_constants import DISEASE_PREVALENCE
-from src.scoring_constants import DISEASE_PREVALENCE, SEX_BURDEN_MORTALITY
 from src.clinical_reporter import build_llm_report
-from src.nfrules import recommend_nf, __version__ as nf_version
-
-
 
 # Components
 from components.form_inputs import render_form_and_collect_inputs
@@ -110,11 +106,10 @@ if page == "Main":
 
         # -------------------------
         # ICER scoring
+        # Sex domain reference (CVD mortality share) is now in DISEASE_PREVALENCE
+        # directly — no burden_override needed.
         # -------------------------
         total_score, breakdown = compute_icer_score(preds, payload)
-        total_score_sex_adj, breakdown_sex_adj = compute_icer_score(
-            preds, payload, burden_override=SEX_BURDEN_MORTALITY
-        )
 
         render_score_tiles(total_score, breakdown)
 
@@ -141,6 +136,7 @@ if page == "Main":
         st.subheader("Recommended Actions")
         st.write(nf_actions + bandit_actions)
         st.caption(f"Policy layer version: {nf_version}")
+
         # -------------------------
         # Report payload
         # -------------------------
@@ -188,24 +184,21 @@ if page == "Report":
         st.info("Run the model on the Main page to generate a report.")
         st.stop()
 
-    # Pull the full report dict (recommended). Fall back gracefully if older state keys exist.
     report = st.session_state.get("report", None)
 
-    # Back-compat: if you still have st.session_state["narrative"] holding the full dict or a string
     if report is None:
         report = st.session_state.get("narrative", None)
 
-    # Extract summary text safely
     if isinstance(report, dict):
         summary_text = report.get("summary") or report.get("narrative") or report.get("text") or ""
     else:
         summary_text = str(report) if report is not None else ""
 
-    nf_actions = st.session_state.get("nf_actions", [])
+    nf_actions     = st.session_state.get("nf_actions", [])
     bandit_actions = st.session_state.get("bandit_actions", [])
-    breakdown = st.session_state.get("breakdown", None)
-    rep_prev_fig = st.session_state.get("rep_prev_fig", None)
-    pdrr_fig = st.session_state.get("pdrr_fig", None)
+    breakdown      = st.session_state.get("breakdown", None)
+    rep_prev_fig   = st.session_state.get("rep_prev_fig", None)
+    pdrr_fig       = st.session_state.get("pdrr_fig", None)
 
     st.header("Clinical Trial Diversity Report")
 
@@ -234,19 +227,17 @@ if page == "Report":
 
     st.subheader("Download ICER Scorecard (PDF)")
 
-    # Guard: disable PDF generation if we don't have a report dict
     can_make_pdf = isinstance(report, dict) and bool(report)
 
     if st.button("📄 Generate PDF Scorecard", disabled=not can_make_pdf):
         try:
             pdf_bytes = generate_pdf_scorecard(
-                report=report,  # ✅ KEY FIX: pass the report dict
+                report=report,
                 title="ICER Diversity Prediction Scorecard for Your Clinical Trial",
                 breakdown=breakdown,
                 rep_prev_fig=rep_prev_fig,
                 pdrr_fig=pdrr_fig,
             )
-
             st.download_button(
                 "⬇️ Download PDF Scorecard",
                 data=pdf_bytes,
