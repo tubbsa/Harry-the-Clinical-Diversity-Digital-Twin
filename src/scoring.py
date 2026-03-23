@@ -3,31 +3,32 @@
 # Diversity Score + Shortfall Analysis
 # FINAL PRODUCTION VERSION (BUGFIX ONLY)
 #
-# Sex domain reference change (v2):
-#   Previously used DISEASE_PREVALENCE for sex (female: 5.8%,
-#   male: 7.8%). Because these are condition prevalence rates
-#   rather than population sex proportions, any realistic
-#   enrollment split produced PDRRs far above 1.0, placing all
-#   configurations outside the scoring bands and yielding a
-#   sex domain score of 0/6 in every case.
+# Reference proportion update (v3):
+#   Race and age groups now use U.S. Census population share
+#   (Census 2025 QuickFacts) as the parity reference rather
+#   than within-group CVD prevalence rates. Population share
+#   was selected because prevalence and mortality data may
+#   reflect systemic disparities in diagnosis and treatment
+#   access, embedding existing inequities into the scoring
+#   framework. Sex retains CVD mortality share (Mosca et al.
+#   2011) as the reference, which captures the documented
+#   gap between female CVD mortality burden and historical
+#   trial underrepresentation.
 #
-#   The sex domain now uses SEX_BURDEN_MORTALITY as the default
-#   reference (female: 52.6%, male: 47.4%), derived from the
-#   share of U.S. cardiovascular deaths by sex (Mosca et al.,
-#   Circulation 2011). This reference produces PDRRs near 1.0
-#   for typical enrollment splits, making the sex score
-#   sensitive to actual trial design decisions.
-#
-#   The burden_override parameter is retained for
-#   backward compatibility and can still be used to pass
-#   an alternative reference if needed.
+#   Updated reference values (now in DISEASE_PREVALENCE):
+#     white_pct:  0.575  (57.5% non-Hispanic White, Census 2025)
+#     black_pct:  0.137  (13.7% Black alone, Census 2025)
+#     asian_pct:  0.067  (6.7%  Asian alone, Census 2025)
+#     aian_pct:   0.014  (1.4%  AIAN alone, Census 2025)
+#     female_pct: 0.526  (CVD mortality share, Mosca et al. 2011)
+#     male_pct:   0.474  (CVD mortality share, Mosca et al. 2011)
+#     age65_pct:  0.180  (18.0% adults ≥65, Census 2025)
 # ============================================================
 
 import pandas as pd
 
 from .scoring_constants import (
     DISEASE_PREVALENCE,
-    SEX_BURDEN_MORTALITY,
     RACE_GROUPS,
     SEX_GROUPS,
     AGE_GROUPS,
@@ -97,9 +98,6 @@ def compute_icer_score(preds: dict, meta: dict = None, burden_override: dict = N
     # -------------------------
     # SEX DOMAIN = 6 max
     # -------------------------
-    # Default reference: SEX_BURDEN_MORTALITY (cardiovascular
-    # mortality share by sex, Mosca et al. 2011).
-    # burden_override can supply an alternative reference if needed.
     sex_scores = []
 
     for key in SEX_GROUPS:
@@ -108,7 +106,7 @@ def compute_icer_score(preds: dict, meta: dict = None, burden_override: dict = N
         if burden_override is not None and key in burden_override:
             denom = burden_override[key]
         else:
-            denom = SEX_BURDEN_MORTALITY[key]
+            denom = DISEASE_PREVALENCE[key]
 
         # ---- BUGFIX ----
         if trial_val is None or denom <= 0:
@@ -162,7 +160,7 @@ def compute_icer_score(preds: dict, meta: dict = None, burden_override: dict = N
         columns=[
             "component",
             "value",
-            "disease_prevalence",
+            "population_reference",
             "PDRR_raw",
             "PDRR",
             "score",
@@ -203,7 +201,7 @@ def compute_diversity_score(preds: dict):
 
     shortfalls = pd.DataFrame(
         shortfall_rows,
-        columns=["component", "predicted", "disease_prevalence", "shortfall"],
+        columns=["component", "predicted", "population_reference", "shortfall"],
     )
 
     return {
@@ -212,4 +210,3 @@ def compute_diversity_score(preds: dict):
         "diversity_score": float(diversity_score),
         "shortfalls": shortfalls,
     }
-
