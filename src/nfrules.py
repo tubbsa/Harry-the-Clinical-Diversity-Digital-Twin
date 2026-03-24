@@ -418,26 +418,31 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
     black_under = _under("black_pct")
 
     if white_under or black_under:
+        n_regions = payload.get("n_us_regions", 1)
+        n_states  = payload.get("n_us_states",  1)
+        n_sites_v = payload.get("n_sites",       1)
         recs.append(
-            "Expand recruitment scope by increasing the number of "
-            "recruiting sites, U.S. states, and Census regions -- "
-            "recruitment scope features (n_us_regions, n_us_states, "
-            "n_sites) are the strongest structured predictors of "
-            "White and Black enrollment composition"
+            f"Increase recruitment scope: current configuration has "
+            f"{n_sites_v} site(s) across {n_states} state(s) and "
+            f"{n_regions} Census region(s). Increasing 'Number of "
+            f"recruiting sites', 'Number of U.S. states recruiting', "
+            f"and 'Number of U.S. Census regions recruiting' are the "
+            f"strongest structured predictors of White and Black "
+            f"enrollment composition -- try increasing each and "
+            f"rerunning the model to see the projected impact"
         )
 
         if black_under:
             sev = _severity(sg_pdrr["black_pct"])
             recs.append(
-                f"Add community-based or non-academic recruitment "
-                f"locations to improve access for Black or African "
-                f"American participants ({sev} under-representation "
-                f"relative to U.S. Census population share of 13.7%; "
-                f"PDRR = {sg_pdrr['black_pct']:.2f})"
-            )
-            recs.append(
-                "Review exclusion criteria that may disproportionately "
-                "affect underrepresented racial groups"
+                f"Black or African American enrollment shows {sev} "
+                f"under-representation relative to U.S. Census "
+                f"population share of 13.7% (PDRR = "
+                f"{sg_pdrr['black_pct']:.2f}). Increasing the number "
+                f"of U.S. Census regions and states recruiting is the "
+                f"most impactful change available in the interface -- "
+                f"broader geographic coverage is associated with "
+                f"higher Black enrollment in historical trials"
             )
 
     # ---- Tier 2: Asian / AIAN --------------------------------
@@ -464,10 +469,15 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
             "(" + "; ".join(pdrr_notes) + ")"
         )
         recs.append(
-            "Expand site diversity to include locations with higher "
-            "concentrations of "
+            "Increase 'Number of U.S. Census regions recruiting' and "
+            "'Number of U.S. states recruiting' to expand geographic "
+            "coverage -- broader regional reach is associated with "
+            "higher enrollment of "
             + ", ".join(under_names)
-            + " populations in their catchment areas"
+            + " populations, which show structural absence relative "
+            "to Census population share in most historical "
+            "cardiovascular trials ("
+            + "; ".join(pdrr_notes) + ")"
         )
 
     # ---- Tier 3: Sex -----------------------------------------
@@ -498,19 +508,21 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
         if female_under:
             sev = _severity(sg_pdrr["female_pct"])
             recs.append(
-                f"Ensure recruitment materials are inclusive and "
-                f"accessible to female participants; predicted female "
-                f"enrollment reflects {sev} under-representation "
+                f"Female enrollment shows {sev} under-representation "
                 f"relative to cardiovascular mortality share of 52.6% "
-                f"(PDRR = {sg_pdrr['female_pct']:.2f})"
+                f"(PDRR = {sg_pdrr['female_pct']:.2f}). If "
+                f"'Eligibility Sex' is set to Male or Unknown, "
+                f"consider changing it to All -- this is the single "
+                f"strongest structured predictor of female enrollment "
+                f"composition in the model"
             )
 
     # ---- Tier 4: Age 65+ -------------------------------------
 
     if _under("age65_pct"):
 
-        max_age     = payload.get("eligibility_max_age_yrs")
-        min_age     = payload.get("eligibility_min_age_yrs")
+        max_age     = payload.get("eligibility_max_age_yrs") or payload.get("eligibility_max_age")
+        min_age     = payload.get("eligibility_min_age_yrs") or payload.get("eligibility_min_age")
         max_missing = payload.get("max_age_missing", 0)
         min_missing = payload.get("min_age_missing", 0)
         sev         = _severity(sg_pdrr["age65_pct"])
@@ -546,14 +558,18 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
                 "where clinically appropriate"
             )
 
+        n_regions = payload.get("n_us_regions", 1)
+        n_states  = payload.get("n_us_states",  1)
         recs.append(
-            "Reduce visit burden or add decentralized options to "
-            "support older adult participation -- recruitment scope "
-            "features also predict age65 enrollment alongside "
-            "eligibility age bounds; adults aged 65 and older are "
-            "structurally under-enrolled relative to their Census "
-            "population share of 18.0% in most historical "
-            "cardiovascular trials"
+            f"Increase recruitment scope to improve older adult "
+            f"enrollment -- current configuration has {n_states} "
+            f"state(s) across {n_regions} Census region(s). "
+            f"Recruitment scope features predict age65 enrollment "
+            f"alongside eligibility age bounds; adults aged 65 and "
+            f"older are structurally under-enrolled relative to "
+            f"Census population share of 18.0% in most historical "
+            f"cardiovascular trials (PDRR = "
+            f"{sg_pdrr['age65_pct']:.2f})"
         )
 
     # ---- Tier 5: Trial design completeness -------------------
@@ -584,3 +600,4 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
         return recs[:3]
     else:
         return recs
+
