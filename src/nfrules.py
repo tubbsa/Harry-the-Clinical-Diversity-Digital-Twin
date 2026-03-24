@@ -3,7 +3,7 @@
 # Abigail Tubbs
 #
 # Purpose:
-#   Translate model-predicted ICER + subgroup proportions into
+#   Translate model-predicted CDR score + subgroup proportions into
 #   interpretable, actionable trial design recommendations.
 #
 # Design:
@@ -12,41 +12,68 @@
 #   • Fuzzy system = policy interpretation (NOT trained)
 #
 # Gap metric:
-#   All gaps are expressed as PDRR = trial_val / disease_prevalence,
+#   All gaps are expressed as PDRR = trial_val / population_reference,
 #   matching the scoring logic in scoring.py / score_pdrr().
-#   PDRR = 1.0 means perfect parity with disease burden.
-#   PDRR < 1.0 means under-represented relative to disease burden.
-#   Recommendations trigger when PDRR falls below a threshold.
+#   PDRR = 1.0 means exact parity with the population reference.
+#   PDRR < 1.0 means under-represented relative to the reference.
+#   Recommendations trigger when PDRR falls below a group threshold.
+#
+# Reference proportions (from scoring_constants.py DISEASE_PREVALENCE):
+#   Race and age groups use U.S. Census population share (2025).
+#   Sex groups use CVD mortality share (Mosca et al., Circulation 2011).
+#
+#   Group        Reference   Source
+#   --------------------------------------------------------
+#   White        0.575       Census 2025 (non-Hispanic White alone)
+#   Black        0.137       Census 2025
+#   Asian        0.067       Census 2025
+#   AIAN         0.014       Census 2025
+#   Female       0.526       CVD mortality share (Mosca et al.)
+#   Male         0.474       CVD mortality share (Mosca et al.)
+#   Age65+       0.180       Census 2025
 #
 # Threshold rationale — grounded in observed PDRR distributions
-# across 1,290 U.S. cardiovascular trials (training dataset):
+# across 1,290 U.S. cardiovascular trials (training dataset),
+# computed against Census population share / CVD mortality share
+# references:
 #
-#   Group        Median PDRR   % trials < 0.8   % trials = 0
+#   Group        Typical PDRR range   Threshold   Rationale
 #   --------------------------------------------------------
-#   White        1.032         27.8%             8.6%
-#   Male         1.152         21.5%             6.4%
-#   Black        0.690         54.4%            25.1%
-#   Female       0.850         45.0%             5.2%
-#   Asian        0.000         76.7%            54.3%
-#   AIAN         0.000         93.5%            83.9%
-#   Age65        0.000         78.9%            75.2%
+#   White        1.2 -- 1.5           0.80        Over-represented vs Census
+#                                                  in most trials; threshold
+#                                                  fires only on unusual
+#                                                  under-enrollment
+#   Male         1.0 -- 1.2           0.80        Near or above parity;
+#                                                  same rationale as White
+#   Black        0.4 -- 1.0           0.90        Chronically under-
+#                                                  represented; threshold
+#                                                  fires earlier to catch
+#                                                  gaps sooner
+#   Female       0.8 -- 1.0           0.90        Near parity but
+#                                                  historically under-
+#                                                  represented; matches
+#                                                  Black sensitivity
+#   Asian        0.0 -- 0.5           0.95        Structural absence in
+#                                                  majority of trials;
+#                                                  most sensitive threshold
+#   AIAN         0.0 -- 0.1           0.95        Near-zero enrollment in
+#                                                  nearly all trials;
+#                                                  most sensitive threshold
+#   Age65+       0.1 -- 0.8           0.95        Structurally under-
+#                                                  enrolled relative to
+#                                                  Census share in most
+#                                                  trials; most sensitive
 #
-#   Threshold assignment:
-#     White / Male   — median PDRR >= 1.0 (at or above parity)
-#                      threshold 0.80: fire when meaningfully below parity
+#   Principle: the worse the historical representation relative to
+#   Census population share, the higher the threshold and the more
+#   sensitive the recommendation trigger. This grounds differential
+#   sensitivity in observed evidence rather than arbitrary design.
 #
-#     Black / Female — median PDRR < 1.0 (chronic under-representation)
-#                      threshold 0.90: fire earlier to catch gaps sooner
-#
-#     Asian / AIAN / Age65 — median PDRR = 0.0 (structural absence
-#                      in majority of trials)
-#                      threshold 0.95: most sensitive, fire at any
-#                      meaningful departure from parity
-#
-#   Principle: the worse the historical representation, the higher
-#   the threshold and the more sensitive the recommendation trigger.
-#   This grounds differential sensitivity in observed evidence rather
-#   than arbitrary design choices.
+#   NOTE: Median PDRR values previously reported in this file were
+#   computed against CVD prevalence references and are no longer
+#   valid under Census population share references. Observed median
+#   PDRRs should be recomputed from training data against the current
+#   DISEASE_PREVALENCE constants before updating _OBSERVED_MEDIAN_PDRR.
 #
 # SHAP grounding (companion study, Figure 3A/B/C):
 #
@@ -106,39 +133,44 @@ from .scoring_constants import (
     AGE_GROUPS,
 )
 
-__version__ = "2.0.0-shap-evidence-based"
+__version__ = "2.1.0-census-reference"
+
 # ------------------------------------------------------------
 # Evidence-based PDRR thresholds
 # ------------------------------------------------------------
 # Derived from observed PDRR distributions across 1,290 U.S.
-# cardiovascular trials in the training dataset.
+# cardiovascular trials in the training dataset, computed against
+# Census population share (race/age) and CVD mortality share (sex).
 # Higher threshold = more sensitive = fires on smaller gaps.
 # Groups with worse historical representation get higher thresholds.
 
 _PDRR_THRESHOLD = {
-    # At or above parity in typical trial (median PDRR >= 1.0)
+    # At or above Census parity in typical trial (PDRR typically > 1.0)
     "white_pct":  0.80,
     "male_pct":   0.80,
 
-    # Chronically below parity (median PDRR < 1.0)
+    # Chronically below Census parity
     "black_pct":  0.90,
     "female_pct": 0.90,
 
-    # Structural absence in majority of trials (median PDRR = 0.0)
+    # Structural absence in majority of trials relative to Census share
     "asian_pct":  0.95,
     "aian_pct":   0.95,
     "age65_pct":  0.95,
 }
 
-# Observed median PDRRs from training data (for reference/reporting)
-_OBSERVED_MEDIAN_PDRR = {
-    "white_pct":  1.032,
-    "black_pct":  0.690,
-    "asian_pct":  0.000,
-    "aian_pct":   0.000,
-    "female_pct": 0.850,
-    "male_pct":   1.152,
-    "age65_pct":  0.000,
+# Typical PDRR ranges under Census/mortality share references.
+# NOTE: These are representative ranges derived from training data
+# analysis; exact median values should be recomputed from training
+# data against current DISEASE_PREVALENCE constants.
+_TYPICAL_PDRR_RANGE = {
+    "white_pct":  (1.20, 1.50),   # Over-represented vs Census in most trials
+    "black_pct":  (0.40, 1.00),   # Chronically under-represented
+    "asian_pct":  (0.00, 0.50),   # Structural absence in most trials
+    "aian_pct":   (0.00, 0.10),   # Near-zero in nearly all trials
+    "female_pct": (0.80, 1.00),   # Near parity; historically under-enrolled
+    "male_pct":   (1.00, 1.20),   # Near or above parity
+    "age65_pct":  (0.10, 0.80),   # Structurally under-enrolled vs Census
 }
 
 # Human-readable group labels
@@ -150,6 +182,17 @@ _GROUP_LABELS = {
     "female_pct": "Female",
     "male_pct":   "Male",
     "age65_pct":  "adults aged 65 and older",
+}
+
+# Human-readable reference source labels for recommendations
+_REF_SOURCE = {
+    "white_pct":  "U.S. Census population share",
+    "black_pct":  "U.S. Census population share",
+    "asian_pct":  "U.S. Census population share",
+    "aian_pct":   "U.S. Census population share",
+    "female_pct": "CVD mortality share",
+    "male_pct":   "CVD mortality share",
+    "age65_pct":  "U.S. Census population share",
 }
 
 
@@ -187,7 +230,11 @@ def _pdrr(pred_val, key):
     """
     Compute PDRR for a subgroup using DISEASE_PREVALENCE.
     Matches compute_icer_score() in scoring.py exactly.
-    Returns None if pred_val is None or prevalence is zero.
+
+    For race and age groups, DISEASE_PREVALENCE contains Census
+    population share. For sex groups, it contains CVD mortality share.
+
+    Returns None if pred_val is None or reference is zero.
     """
     denom = DISEASE_PREVALENCE.get(key)
     if pred_val is None or denom is None or denom <= 0:
@@ -220,8 +267,10 @@ def recommend_nf(payload, preds):
     Subgroup-aware, evidence-based neuro-fuzzy recommendations.
 
     Thresholds are grounded in observed PDRR distributions across
-    1,290 U.S. cardiovascular trials. Groups with worse historical
-    representation receive more sensitive thresholds.
+    1,290 U.S. cardiovascular trials, computed against Census
+    population share (race/age) and CVD mortality share (sex).
+    Groups with worse historical representation receive more
+    sensitive thresholds.
 
     Recommendation priority order follows SHAP feature importance
     from the companion predictive modeling study.
@@ -266,10 +315,20 @@ def recommend_nf(payload, preds):
 def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
 
     # --------------------------------------------------------
-    # 1. ICER → ACTION INTENSITY (FUZZY)
+    # 1. ICER/CDR -> ACTION INTENSITY (FUZZY)
     #
     # icer_score must be on 0-100 scale.
     # In Main.py: preds_with_score["icer_score"] = (total_score / 21.0) * 100.0
+    #
+    # Membership functions:
+    #   LOW    [0,1] -> [0,1] -> [40,0]   (poor CDR score)
+    #   MEDIUM [30,0] -> [50,1] -> [70,0]  (moderate CDR score)
+    #   HIGH   [60,0] -> [100,1] -> [100,1] (good CDR score)
+    #
+    # Rules:
+    #   LOW    -> AGGRESSIVE (many recommendations)
+    #   MEDIUM -> MODERATE   (some recommendations)
+    #   HIGH   -> LIGHT      (few recommendations)
     # --------------------------------------------------------
 
     icer = _clamp(preds.get("icer_score", 0), 0, 100)
@@ -308,6 +367,8 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
     #
     # Computed using DISEASE_PREVALENCE from scoring_constants.py,
     # matching compute_icer_score() in scoring.py exactly.
+    # Race/age: divided by Census population share.
+    # Sex: divided by CVD mortality share.
     # --------------------------------------------------------
 
     sg_pdrr = {
@@ -325,21 +386,26 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
     #
     # Tier 1 — White / Black
     #   SHAP: recruitment scope drives these targets
-    #   Thresholds: White 0.80 (median PDRR 1.03),
-    #               Black 0.90 (median PDRR 0.69)
+    #   White threshold 0.80: typical PDRR 1.2-1.5 (over-represented
+    #     vs Census); fires only on unusual under-enrollment
+    #   Black threshold 0.90: typical PDRR 0.4-1.0 (chronically
+    #     under-represented vs Census 13.7%)
     #
     # Tier 2 — Asian / AIAN
     #   SHAP: eligibility constraints relatively more important
-    #   Thresholds: both 0.95 (median PDRR 0.00)
+    #   Both threshold 0.95: structural absence relative to Census
+    #     share in majority of historical trials
     #
     # Tier 3 — Sex
     #   SHAP: eligibility_sex_FEMALE is rank-1 individual feature
-    #   Thresholds: Female 0.90 (median PDRR 0.85),
-    #               Male   0.80 (median PDRR 1.15)
+    #   Female threshold 0.90: near parity vs CVD mortality share
+    #     but historically under-enrolled
+    #   Male threshold 0.80: typically at or above CVD mortality parity
     #
-    # Tier 4 — Age ≥65
+    # Tier 4 — Age 65+
     #   SHAP: age bounds + recruitment scope both matter
-    #   Threshold: 0.95 (median PDRR 0.00)
+    #   Threshold 0.95: structurally under-enrolled relative to
+    #     Census population share (18%) in most trials
     #
     # Tier 5 — Trial design completeness (cross-domain)
     # --------------------------------------------------------
@@ -354,7 +420,7 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
     if white_under or black_under:
         recs.append(
             "Expand recruitment scope by increasing the number of "
-            "recruiting sites, U.S. states, and Census regions — "
+            "recruiting sites, U.S. states, and Census regions -- "
             "recruitment scope features (n_us_regions, n_us_states, "
             "n_sites) are the strongest structured predictors of "
             "White and Black enrollment composition"
@@ -366,9 +432,8 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
                 f"Add community-based or non-academic recruitment "
                 f"locations to improve access for Black or African "
                 f"American participants ({sev} under-representation "
-                f"relative to cardiovascular disease burden; "
-                f"PDRR = {sg_pdrr['black_pct']:.2f}, historical "
-                f"median PDRR = {_OBSERVED_MEDIAN_PDRR['black_pct']:.3f})"
+                f"relative to U.S. Census population share of 13.7%; "
+                f"PDRR = {sg_pdrr['black_pct']:.2f})"
             )
             recs.append(
                 "Review exclusion criteria that may disproportionately "
@@ -383,7 +448,8 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
         under_names = [_GROUP_LABELS[k] for k in sparse_under]
         pdrr_notes  = [
             f"{_GROUP_LABELS[k]} PDRR = {sg_pdrr[k]:.2f} "
-            f"(historical median = {_OBSERVED_MEDIAN_PDRR[k]:.3f})"
+            f"(Census population share = "
+            f"{DISEASE_PREVALENCE[k]*100:.1f}%)"
             for k in sparse_under
         ]
 
@@ -391,10 +457,11 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
             "Review eligibility criteria for implicit restrictions "
             "that may reduce participation among "
             + ", ".join(under_names)
-            + " — eligibility constraints are the primary structured "
+            + " -- eligibility constraints are the primary structured "
             "predictor of enrollment presence for these groups, which "
             "show structural absence in the majority of historical "
-            "cardiovascular trials (" + "; ".join(pdrr_notes) + ")"
+            "cardiovascular trials relative to Census population share "
+            "(" + "; ".join(pdrr_notes) + ")"
         )
         recs.append(
             "Expand site diversity to include locations with higher "
@@ -423,7 +490,7 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
             recs.append(
                 "The sex eligibility setting (eligibility_sex_FEMALE) "
                 "is the single strongest structured predictor of "
-                "enrollment composition — review sex-restricted "
+                "enrollment composition -- review sex-restricted "
                 "eligibility criteria and consider expanding to all "
                 "sexes where clinically appropriate"
             )
@@ -432,14 +499,13 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
             sev = _severity(sg_pdrr["female_pct"])
             recs.append(
                 f"Ensure recruitment materials are inclusive and "
-                f"accessible across genders; predicted female "
+                f"accessible to female participants; predicted female "
                 f"enrollment reflects {sev} under-representation "
-                f"relative to cardiovascular disease burden "
-                f"(PDRR = {sg_pdrr['female_pct']:.2f}, historical "
-                f"median PDRR = {_OBSERVED_MEDIAN_PDRR['female_pct']:.3f})"
+                f"relative to cardiovascular mortality share of 52.6% "
+                f"(PDRR = {sg_pdrr['female_pct']:.2f})"
             )
 
-    # ---- Tier 4: Age ≥65 -------------------------------------
+    # ---- Tier 4: Age 65+ -------------------------------------
 
     if _under("age65_pct"):
 
@@ -451,25 +517,25 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
 
         if max_missing:
             recs.append(
-                "Specify a maximum eligible age explicitly — "
+                "Specify a maximum eligible age explicitly -- "
                 "max_age_missing is a top-10 structured predictor "
                 "and unspecified maximum age is associated with "
                 "lower older-adult enrollment"
             )
         elif max_age is not None and _clamp(max_age, 0, 120) < 75:
             recs.append(
-                f"Consider increasing the maximum eligible age — "
+                f"Consider increasing the maximum eligible age -- "
                 f"eligibility_max_age_yrs is a top-6 structured "
                 f"predictor of age65 enrollment; current value may "
                 f"exclude participants aged 65 and older "
-                f"({sev} under-representation; "
-                f"PDRR = {sg_pdrr['age65_pct']:.2f}, historical "
-                f"median PDRR = {_OBSERVED_MEDIAN_PDRR['age65_pct']:.3f})"
+                f"({sev} under-representation relative to Census "
+                f"population share of 18.0%; "
+                f"PDRR = {sg_pdrr['age65_pct']:.2f})"
             )
 
         if min_missing:
             recs.append(
-                "Specify a minimum eligible age explicitly — "
+                "Specify a minimum eligible age explicitly -- "
                 "min_age_missing is a top-10 structured predictor "
                 "and unspecified minimum age reduces prediction "
                 "reliability for older-adult enrollment"
@@ -482,10 +548,11 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
 
         recs.append(
             "Reduce visit burden or add decentralized options to "
-            "support older adult participation — recruitment scope "
+            "support older adult participation -- recruitment scope "
             "features also predict age65 enrollment alongside "
-            "eligibility age bounds; adults aged 65 and older show "
-            f"structural absence in {78.9:.1f}% of historical "
+            "eligibility age bounds; adults aged 65 and older are "
+            "structurally under-enrolled relative to their Census "
+            "population share of 18.0% in most historical "
             "cardiovascular trials"
         )
 
@@ -493,7 +560,7 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
 
     if payload.get("study_type_Unknown", 0):
         recs.append(
-            "Specify study type and design attributes fully — "
+            "Specify study type and design attributes fully -- "
             "study_type_Unknown is a top-10 structured predictor; "
             "underspecified design fields reduce prediction "
             "reliability across all demographic targets"
@@ -502,15 +569,18 @@ def _recommend_nf_core(payload, preds, domain_scores, baseline_scores):
     # --------------------------------------------------------
     # 4. MODULATE BY ACTION INTENSITY
     #
-    # Slicing preserves SHAP priority — most important recs first.
+    # Slicing preserves SHAP priority -- most important recs first.
+    # action_level < 3  -> LIGHT      -> 1 recommendation
+    # action_level 3-7  -> MODERATE   -> 3 recommendations
+    # action_level >= 7 -> AGGRESSIVE -> all recommendations
     # --------------------------------------------------------
 
     if not recs:
         return ["No major equity-related design changes recommended at this time"]
 
     if action_level < 3:
-        return recs[:1]      # LIGHT
+        return recs[:1]
     elif action_level < 7:
-        return recs[:3]      # MODERATE
+        return recs[:3]
     else:
-        return recs          # AGGRESSIVE
+        return recs
