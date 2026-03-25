@@ -9,14 +9,28 @@
 # Design:
 #   nfrules.py handles: eligibility sex, age bounds, recruitment
 #     scope (n_sites, n_us_states, n_us_regions), study type
-#   bandit.py handles: masking, allocation, intervention model,
-#     primary purpose, sponsor, phases, planned enrollment
+#   bandit.py handles: allocation, masking, intervention model,
+#     primary purpose, sponsor, collaborators, phases, funder type
 #
 #   For each candidate field, a delta score is estimated based on
 #   the distance between the current value and the value most
 #   commonly associated with higher CDR scores in historical
 #   cardiovascular trials. The action with the highest estimated
 #   delta is returned as a single readable recommendation.
+#
+# Model scope:
+#   Recommendations are restricted to fields confirmed present
+#   in the trained model feature space (CAT_COLS):
+#     eligibility_sex, sponsor, collaborators, phases,
+#     funder_type, study_type, allocation, intervention_model,
+#     masking, primary_purpose
+#
+#   Fields NOT in the model feature space and therefore excluded:
+#     planned_enrollment — not in NUM_COLS or CAT_COLS;
+#       changes to this field do not affect model predictions.
+#
+#   nfrules.py covers eligibility_sex, study_type, and
+#   recruitment scope, so bandit.py evaluates the remainder.
 #
 # Evidence basis:
 #   High-diversity cardiovascular trials in the training dataset
@@ -27,22 +41,29 @@
 #     primary_purpose:     Treatment or Prevention
 #     phases:              Phase 3 or Phase 4
 #     sponsor:             NIH or Government
-#     planned_enrollment:  >= 200 participants
+#     funder_type:         NIH or Government
+#     collaborators:       Academic or NIH
 #
 #   These are used as soft targets. A field already at its target
 #   value contributes zero delta. Fields far from target contribute
 #   larger delta proportional to the estimated CDR impact.
 #
-# NOTE: Delta values are heuristic estimates. Once training data
-#   CDR distributions by design field are computed, replace
-#   _FIELD_DELTA with empirically derived expected CDR gains.
+# NOTE: Delta values are heuristic estimates derived from modal
+#   design patterns in high-CDR training trials. Replace
+#   _FIELD_DELTA with empirically derived expected CDR gains
+#   once CDR distributions by design field are computed from
+#   training data.
 # ============================================================
 
 # ------------------------------------------------------------
-# Target values associated with higher CDR scores in historical
-# high-diversity cardiovascular trials (CDR >= 14/21).
-# Fields already at target contribute zero delta.
+# Payload key names used by payload_builder.py for each field.
+# These are the keys bandit.py reads from the payload dict.
+# Note: predictor.py remaps these to CAT_COLS names internally;
+# bandit.py reads from the payload directly so uses payload keys.
 # ------------------------------------------------------------
+
+# Target values associated with higher CDR scores.
+# Fields already at their target contribute zero delta.
 _HIGH_DIVERSITY_TARGETS = {
     "allocation":         {"Randomized"},
     "masking":            {"Double", "Triple", "Quadruple"},
@@ -50,11 +71,15 @@ _HIGH_DIVERSITY_TARGETS = {
     "primary_purpose":    {"Treatment", "Prevention"},
     "Phases":             {"Phase 3", "Phase 4"},
     "Sponsor":            {"NIH", "Government"},
+    "funder_type":        {"NIH", "Government"},
+    "collaborators":      {"Academic", "NIH"},
 }
 
 # Estimated CDR score delta (0-21 scale) for moving a field
 # from an off-target to on-target value.
-# Replace with empirically derived values from training data.
+# All fields listed here are confirmed present in the model
+# feature space (CAT_COLS). planned_enrollment is excluded
+# because it is not in the model feature space.
 _FIELD_DELTA = {
     "allocation":         1.2,
     "masking":            0.8,
@@ -62,16 +87,19 @@ _FIELD_DELTA = {
     "primary_purpose":    1.0,
     "Phases":             1.4,
     "Sponsor":            1.1,
-    "planned_enrollment": 0.9,
+    "funder_type":        0.9,
+    "collaborators":      0.7,
 }
 
-# Human-readable recommendation templates for each field.
-# {current} and {target} are filled in at runtime.
+# Human-readable recommendation templates.
+# {current} is filled with the trial's current value at runtime.
+# {delta} is filled with the estimated CDR impact.
 _REC_TEMPLATE = {
     "allocation": (
         "Consider changing allocation from '{current}' to Randomized -- "
         "randomized trials show higher demographic diversity in historical "
-        "cardiovascular trial data (estimated CDR impact: +{delta:.1f} points)"
+        "cardiovascular trial data "
+        "(estimated CDR impact: +{delta:.1f} points)"
     ),
     "masking": (
         "Consider using Double or Triple masking rather than '{current}' -- "
@@ -95,8 +123,8 @@ _REC_TEMPLATE = {
     "Phases": (
         "Phase 3 and Phase 4 trials show the highest enrollment diversity "
         "in historical cardiovascular trial data; current phase is "
-        "'{current}' (estimated CDR impact of phase advancement: "
-        "+{delta:.1f} points)"
+        "'{current}' "
+        "(estimated CDR impact of phase advancement: +{delta:.1f} points)"
     ),
     "Sponsor": (
         "NIH- and government-sponsored cardiovascular trials show higher "
@@ -104,34 +132,19 @@ _REC_TEMPLATE = {
         "data; current sponsor is '{current}' "
         "(estimated CDR impact: +{delta:.1f} points)"
     ),
-    "planned_enrollment": (
-        "Increasing planned enrollment above 200 participants is associated "
-        "with higher CDR scores in historical cardiovascular trials; "
-        "current planned enrollment is {current} "
+    "funder_type": (
+        "Trials funded by NIH or government sources show higher demographic "
+        "diversity than industry-funded trials in historical cardiovascular "
+        "data; current funder type is '{current}' "
+        "(estimated CDR impact: +{delta:.1f} points)"
+    ),
+    "collaborators": (
+        "Adding Academic or NIH collaborators is associated with higher "
+        "enrollment diversity in historical cardiovascular trials; "
+        "current collaborator type is '{current}' "
         "(estimated CDR impact: +{delta:.1f} points)"
     ),
 }
-
-
-def _enrollment_delta(payload: dict) -> float:
-    """Return estimated delta for planned enrollment if below 200."""
-    try:
-        n = float(payload.get("planned_enrollment", 0))
-    except (TypeError, ValueError):
-        n = 0
-    if n < 200:
-        # Scale delta by how far below 200 the enrollment is
-        shortfall = (200 - n) / 200
-        return _FIELD_DELTA["planned_enrollment"] * shortfall
-    return 0.0
-
-
-def _enrollment_rec(payload: dict, delta: float) -> str:
-    n = payload.get("planned_enrollment", "unspecified")
-    return _REC_TEMPLATE["planned_enrollment"].format(
-        current=n,
-        delta=delta,
-    )
 
 
 def bandit_optimize(payload: dict, preds: dict) -> list:
@@ -139,25 +152,30 @@ def bandit_optimize(payload: dict, preds: dict) -> list:
     Evaluate trial design fields not covered by nfrules.py and
     return the single highest-impact actionable recommendation.
 
+    Only fields confirmed present in the model feature space
+    (CAT_COLS) are evaluated. planned_enrollment is excluded
+    because it is not in the model feature space and changes
+    to it do not affect model predictions.
+
     Parameters
     ----------
     payload : dict
         Trial design inputs from build_payload(). Relevant keys:
           allocation, masking, intervention_model, primary_purpose,
-          Phases, Sponsor, planned_enrollment
+          Phases, Sponsor, funder_type, collaborators
     preds : dict
-        Model outputs including icer_score (0-100 scale).
+        Model outputs including predicted demographic proportions
+        and icer_score.
 
     Returns
     -------
     list[str]
         A single-element list containing the highest-impact
         recommendation as a readable string, or an empty list
-        if no improvements are identified.
+        if no improvements are identified (all fields at target).
     """
     candidates = []
 
-    # --- Evaluate categorical fields ---
     for field, targets in _HIGH_DIVERSITY_TARGETS.items():
         current = payload.get(field, "Unknown")
         if current in targets:
@@ -166,16 +184,9 @@ def bandit_optimize(payload: dict, preds: dict) -> list:
         if delta > 0:
             rec = _REC_TEMPLATE[field].format(
                 current=current,
-                target=", ".join(sorted(targets)),
                 delta=delta,
             )
             candidates.append((delta, rec))
-
-    # --- Evaluate planned enrollment ---
-    enroll_delta = _enrollment_delta(payload)
-    if enroll_delta > 0:
-        rec = _enrollment_rec(payload, enroll_delta)
-        candidates.append((enroll_delta, rec))
 
     if not candidates:
         return []
