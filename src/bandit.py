@@ -12,12 +12,6 @@
 #   bandit.py handles: allocation, masking, intervention model,
 #     primary purpose, sponsor, collaborators, phases, funder type
 #
-#   For each candidate field, a delta score is estimated based on
-#   the distance between the current value and the value most
-#   commonly associated with higher CDR scores in historical
-#   cardiovascular trials. The action with the highest estimated
-#   delta is returned as a single readable recommendation.
-#
 # Model scope:
 #   Recommendations are restricted to fields confirmed present
 #   in the trained model feature space (CAT_COLS):
@@ -25,12 +19,20 @@
 #     funder_type, study_type, allocation, intervention_model,
 #     masking, primary_purpose
 #
-#   Fields NOT in the model feature space and therefore excluded:
-#     planned_enrollment — not in NUM_COLS or CAT_COLS;
-#       changes to this field do not affect model predictions.
+#   planned_enrollment is excluded — it is not in the model
+#   feature space (not in NUM_COLS or CAT_COLS) and changes
+#   to it do not affect model predictions.
 #
-#   nfrules.py covers eligibility_sex, study_type, and
-#   recruitment scope, so bandit.py evaluates the remainder.
+# Key naming:
+#   Bandit reads directly from the payload dict produced by
+#   payload_builder.py, so all keys must match payload_builder
+#   key names exactly:
+#     "Sponsor"       (payload_builder key; CAT_COL: sponsor)
+#     "Collaborators" (payload_builder key; CAT_COL: collaborators)
+#     "Phases"        (payload_builder key; CAT_COL: phases)
+#     "Funder Type"   (payload_builder key; CAT_COL: funder_type)
+#   allocation, intervention_model, masking, primary_purpose
+#   are identical between payload_builder and CAT_COLS.
 #
 # Evidence basis:
 #   High-diversity cardiovascular trials in the training dataset
@@ -39,31 +41,19 @@
 #     masking:             Double or Triple
 #     intervention_model:  Parallel
 #     primary_purpose:     Treatment or Prevention
-#     phases:              Phase 3 or Phase 4
-#     sponsor:             NIH or Government
-#     funder_type:         NIH or Government
-#     collaborators:       Academic or NIH
+#     Phases:              Phase 3 or Phase 4
+#     Sponsor:             NIH or Government
+#     Funder Type:         NIH or Government
+#     Collaborators:       Academic or NIH
 #
-#   These are used as soft targets. A field already at its target
-#   value contributes zero delta. Fields far from target contribute
-#   larger delta proportional to the estimated CDR impact.
-#
-# NOTE: Delta values are heuristic estimates derived from modal
-#   design patterns in high-CDR training trials. Replace
+# NOTE: Delta values are heuristic estimates. Replace
 #   _FIELD_DELTA with empirically derived expected CDR gains
 #   once CDR distributions by design field are computed from
 #   training data.
 # ============================================================
 
-# ------------------------------------------------------------
-# Payload key names used by payload_builder.py for each field.
-# These are the keys bandit.py reads from the payload dict.
-# Note: predictor.py remaps these to CAT_COLS names internally;
-# bandit.py reads from the payload directly so uses payload keys.
-# ------------------------------------------------------------
-
 # Target values associated with higher CDR scores.
-# Fields already at their target contribute zero delta.
+# Keys match payload_builder.py payload keys exactly.
 _HIGH_DIVERSITY_TARGETS = {
     "allocation":         {"Randomized"},
     "masking":            {"Double", "Triple", "Quadruple"},
@@ -71,15 +61,14 @@ _HIGH_DIVERSITY_TARGETS = {
     "primary_purpose":    {"Treatment", "Prevention"},
     "Phases":             {"Phase 3", "Phase 4"},
     "Sponsor":            {"NIH", "Government"},
-    "funder_type":        {"NIH", "Government"},
-    "collaborators":      {"Academic", "NIH"},
+    "Funder Type":        {"NIH", "Government"},
+    "Collaborators":      {"Academic", "NIH"},
 }
 
 # Estimated CDR score delta (0-21 scale) for moving a field
 # from an off-target to on-target value.
-# All fields listed here are confirmed present in the model
-# feature space (CAT_COLS). planned_enrollment is excluded
-# because it is not in the model feature space.
+# All fields are confirmed present in CAT_COLS.
+# planned_enrollment is excluded — not in model feature space.
 _FIELD_DELTA = {
     "allocation":         1.2,
     "masking":            0.8,
@@ -87,13 +76,11 @@ _FIELD_DELTA = {
     "primary_purpose":    1.0,
     "Phases":             1.4,
     "Sponsor":            1.1,
-    "funder_type":        0.9,
-    "collaborators":      0.7,
+    "Funder Type":        0.9,
+    "Collaborators":      0.7,
 }
 
 # Human-readable recommendation templates.
-# {current} is filled with the trial's current value at runtime.
-# {delta} is filled with the estimated CDR impact.
 _REC_TEMPLATE = {
     "allocation": (
         "Consider changing allocation from '{current}' to Randomized -- "
@@ -132,13 +119,13 @@ _REC_TEMPLATE = {
         "data; current sponsor is '{current}' "
         "(estimated CDR impact: +{delta:.1f} points)"
     ),
-    "funder_type": (
+    "Funder Type": (
         "Trials funded by NIH or government sources show higher demographic "
         "diversity than industry-funded trials in historical cardiovascular "
         "data; current funder type is '{current}' "
         "(estimated CDR impact: +{delta:.1f} points)"
     ),
-    "collaborators": (
+    "Collaborators": (
         "Adding Academic or NIH collaborators is associated with higher "
         "enrollment diversity in historical cardiovascular trials; "
         "current collaborator type is '{current}' "
@@ -154,25 +141,22 @@ def bandit_optimize(payload: dict, preds: dict) -> list:
 
     Only fields confirmed present in the model feature space
     (CAT_COLS) are evaluated. planned_enrollment is excluded
-    because it is not in the model feature space and changes
-    to it do not affect model predictions.
+    because it is not in the model feature space.
 
     Parameters
     ----------
     payload : dict
-        Trial design inputs from build_payload(). Relevant keys:
-          allocation, masking, intervention_model, primary_purpose,
-          Phases, Sponsor, funder_type, collaborators
+        Trial design inputs from build_payload(). Uses
+        payload_builder.py key names exactly.
     preds : dict
-        Model outputs including predicted demographic proportions
-        and icer_score.
+        Model outputs including predicted demographic proportions.
 
     Returns
     -------
     list[str]
         A single-element list containing the highest-impact
-        recommendation as a readable string, or an empty list
-        if no improvements are identified (all fields at target).
+        recommendation, or an empty list if all fields are
+        already at their target values.
     """
     candidates = []
 
