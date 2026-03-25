@@ -1,6 +1,35 @@
-# ------------------------------------------------------------
-# PATHS — DEPLOYMENT-SAFE (relative to repo root)
-# ------------------------------------------------------------
+# ============================================================
+# src/predictor.py
+# ============================================================
+# Fixes applied (2026-03-25):
+#
+#   1. build_text_embedding: corrected payload key names to match
+#      payload_builder.py output:
+#        "conditions_text"        → "Conditions"
+#        "interventions_text"     → "Interventions"
+#        "primary_outcome_text"   → "Primary Outcome Measures"
+#        "secondary_outcome_text" → "Secondary Outcome Measures"
+#      Previously these four fields silently fell back to ""
+#      on every call, meaning the embedding was built from
+#      inclusion and exclusion text only.
+#
+#   2. predict_proportions: CAT_COLS key lookup now remaps
+#      payload_builder.py keys to the lowercase/underscore
+#      keys expected by CAT_COLS and the frozen encoder:
+#        "Sponsor"      → "sponsor"
+#        "Collaborators"→ "collaborators"
+#        "Phases"       → "phases"
+#        "Funder Type"  → "funder_type"
+#      (allocation, intervention_model, masking, primary_purpose,
+#       eligibility_sex, study_type already matched.)
+#      Previously mismatched keys silently defaulted to "Unknown",
+#      meaning sponsor, collaborators, phases, and funder type
+#      had no effect on model predictions.
+#
+#   3. Removed duplicate dead code block (second hurdle loop and
+#      second return statement) that was unreachable.
+# ============================================================
+
 import os
 import pickle
 from pathlib import Path
@@ -10,7 +39,6 @@ import numpy as np
 from catboost import CatBoostRegressor
 from sentence_transformers import SentenceTransformer
 
-# Allow both package import (src.predictor) and direct local import
 try:
     from .schema import SCHEMA_VERSION, coerce_demo_keys
 except ImportError:  # pragma: no cover
@@ -47,7 +75,6 @@ def _require_file(path: Path, label: str) -> None:
         )
 
 
-# Helpful in Streamlit Cloud logs
 print(f"[predictor] CWD={os.getcwd()}")
 print(f"[predictor] REPO_ROOT={REPO_ROOT}")
 print(f"[predictor] MODEL_DIR={MODEL_DIR}")
@@ -56,8 +83,7 @@ _require_file(MODEL_PATH, "cb_model_multituned.cbm")
 print(f"[predictor] MODEL_PATH={MODEL_PATH} (bytes={MODEL_PATH.stat().st_size})")
 
 model = CatBoostRegressor()
-model.load_model(str(MODEL_PATH))  # IMPORTANT: CatBoost expects a string path reliably
-
+model.load_model(str(MODEL_PATH))
 
 with open(ENCODER_PATH, "rb") as f:
     encoder = pickle.load(f)
@@ -82,7 +108,7 @@ with open(HURDLE_REG_PATH, "rb") as f:
 
 
 # ------------------------------------------------------------
-# LOAD OOD ARTIFACTS (RESTRICTED FEATURE SPACE)
+# LOAD OOD ARTIFACTS
 # ------------------------------------------------------------
 OOD_MEAN = np.load(os.path.join(MODEL_DIR, "ood_mean.npy"))
 OOD_STD  = np.load(os.path.join(MODEL_DIR, "ood_std.npy"))
@@ -91,16 +117,42 @@ OOD_COLS = np.load(
     allow_pickle=True
 ).tolist()
 
-
 print("DEBUG predictor OOD_MEAN shape:", OOD_MEAN.shape)
 print("DEBUG predictor OOD_STD shape:", OOD_STD.shape)
 print("DEBUG predictor OOD_COLS:", OOD_COLS)
 
 
 # ------------------------------------------------------------
-# TEXT EMBEDDER (REPLACES TF-IDF)
+# TEXT EMBEDDER
 # ------------------------------------------------------------
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+
+# ------------------------------------------------------------
+# Key mapping: payload_builder.py keys → CAT_COLS keys
+#
+# payload_builder.py uses mixed-case and spaced keys for
+# categoricals. CAT_COLS uses lowercase_underscore. This map
+# is used at inference time to look up payload values by their
+# payload_builder key and assign them to the correct CAT_COL.
+# Fields not listed here are looked up by col name directly
+# (pass-through, already matching).
+# ------------------------------------------------------------
+_PAYLOAD_TO_CAT = {
+    "eligibility_sex":    "eligibility_sex",
+    "Sponsor":            "sponsor",
+    "Collaborators":      "collaborators",
+    "Phases":             "phases",
+    "Funder Type":        "funder_type",
+    "Study Type":         "study_type",
+    "allocation":         "allocation",
+    "intervention_model": "intervention_model",
+    "masking":            "masking",
+    "primary_purpose":    "primary_purpose",
+}
+
+# Reverse map: CAT_COL name → payload key
+_CAT_TO_PAYLOAD = {v: k for k, v in _PAYLOAD_TO_CAT.items()}
 
 
 # ============================================================
@@ -108,14 +160,24 @@ embedder = SentenceTransformer("all-MiniLM-L6-v2")
 # ============================================================
 
 def build_text_embedding(payload: Dict[str, Any]) -> np.ndarray:
-    """Build 384-dim MiniLM embedding from trial text fields."""
+    """
+    Build 384-dim MiniLM embedding from trial text fields.
+
+    Key names match payload_builder.py output exactly:
+      inclusion_text           — joined inclusion criteria
+      exclusion_text           — joined exclusion criteria
+      Conditions               — joined conditions
+      Interventions            — joined interventions
+      Primary Outcome Measures — joined primary outcomes
+      Secondary Outcome Measures — joined secondary outcomes
+    """
     text_fields = [
         payload.get("inclusion_text", ""),
         payload.get("exclusion_text", ""),
-        payload.get("conditions_text", ""),
-        payload.get("interventions_text", ""),
-        payload.get("primary_outcome_text", ""),
-        payload.get("secondary_outcome_text", ""),
+        payload.get("Conditions", ""),
+        payload.get("Interventions", ""),
+        payload.get("Primary Outcome Measures", ""),
+        payload.get("Secondary Outcome Measures", ""),
     ]
     joined = " ".join(t for t in text_fields if isinstance(t, str))
     return embedder.encode(joined).reshape(1, -1)
@@ -124,20 +186,13 @@ def build_text_embedding(payload: Dict[str, Any]) -> np.ndarray:
 def check_ood(x_vec: np.ndarray):
     """
     Restricted diagonal OOD check using stable metadata features only.
-    x_vec must already be in FINAL feature space order.
+    x_vec must already be in final feature space order.
     """
-
-    # Map restricted OOD columns into FINAL feature space
     col_idx = [FEATURE_NAMES.index(c) for c in OOD_COLS]
-
     x_restricted = x_vec[:, col_idx]
-
-    # Diagonal z-score
     z_vec = np.abs((x_restricted - OOD_MEAN) / OOD_STD)
     z_max = float(np.max(z_vec))
-
-    is_ood = bool(z_max > 3.5)  # conservative, interpretable threshold
-
+    is_ood = bool(z_max > 3.5)
     return is_ood, z_max
 
 
@@ -148,6 +203,21 @@ def check_ood(x_vec: np.ndarray):
 def predict_proportions(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Predict demographic proportions for a proposed clinical trial.
+
+    Parameters
+    ----------
+    payload : dict
+        Output of payload_builder.build_payload(). Must contain
+        text fields, categorical fields, and numeric fields as
+        defined in payload_builder.py.
+
+    Returns
+    -------
+    dict with keys:
+        unreliable_projection : bool
+        ood_score             : float
+        preds                 : dict of demographic proportions
+        _schema               : str
     """
 
     # -----------------------
@@ -158,12 +228,23 @@ def predict_proportions(payload: Dict[str, Any]) -> Dict[str, Any]:
     # -----------------------
     # 2. CATEGORICAL FEATURES
     # -----------------------
-    cat_vals = [[payload.get(c, "Unknown") for c in CAT_COLS]]
-    X_cat = encoder.transform(cat_vals)
+    # For each col in CAT_COLS, look up its value from payload
+    # using the payload_builder key (via _CAT_TO_PAYLOAD).
+    # Falls back to col name directly if not in the map,
+    # then to "Unknown" if not found in payload at all.
+    cat_vals = []
+    for col in CAT_COLS:
+        payload_key = _CAT_TO_PAYLOAD.get(col, col)
+        cat_vals.append(payload.get(payload_key, "Unknown"))
+    X_cat = encoder.transform([cat_vals])
 
     # -----------------------
-    # 3. NUMERIC FEATURES (incl. geography)
+    # 3. NUMERIC FEATURES
     # -----------------------
+    # NUM_COLS keys match payload_builder.py exactly:
+    #   eligibility_min_age_yrs, eligibility_max_age_yrs,
+    #   min_age_missing, max_age_missing,
+    #   n_sites, n_us_states, n_us_regions
     X_num = np.array([[payload.get(c, 0) for c in NUM_COLS]])
 
     # -----------------------
@@ -172,7 +253,7 @@ def predict_proportions(payload: Dict[str, Any]) -> Dict[str, Any]:
     X = np.hstack([X_text, X_cat, X_num])
 
     # -----------------------
-    # 5. OOD CHECK (FINAL FEATURE SPACE ONLY)
+    # 5. OOD CHECK
     # -----------------------
     is_ood, z_score = check_ood(X)
 
@@ -192,31 +273,9 @@ def predict_proportions(payload: Dict[str, Any]) -> Dict[str, Any]:
         else:
             preds[label] = float(hurdle_reg[label].predict(X)[0])
 
-    # --------------------------------------------------------
-    # Canonicalize keys for UI / scoring
-    # --------------------------------------------------------
-    preds_frac = coerce_demo_keys(preds)
-    for k in ["aian_pct", "age65_pct"]:
-        preds_frac.setdefault(k, preds.get(k, 0.0))
-
-    return {
-        "unreliable_projection": bool(is_ood),
-        "ood_score": float(z_score),
-        "preds": preds_frac,
-        "_schema": SCHEMA_VERSION,
-    }
-
     # -----------------------
-    for label, clf in hurdle_clf.items():
-        present = clf.predict(X)[0]
-        if present == 0:
-            preds[label] = 0.0
-        else:
-            preds[label] = float(hurdle_reg[label].predict(X)[0])
-
-    # --------------------------------------------------------
-    # Canonicalize keys for UI / scoring
-    # --------------------------------------------------------
+    # 8. CANONICALIZE KEYS
+    # -----------------------
     preds_frac = coerce_demo_keys(preds)
     for k in ["aian_pct", "age65_pct"]:
         preds_frac.setdefault(k, preds.get(k, 0.0))
