@@ -111,7 +111,12 @@ if page == "Main":
         # -------------------------
         total_score, breakdown = compute_icer_score(preds, payload)
 
-        render_score_tiles(total_score, breakdown)
+        render_score_tiles(
+            total_score=total_score,
+            breakdown=breakdown,
+            ood_score=result["ood_score"],
+            is_ood=result["unreliable_projection"]
+        )
 
         # -------------------------
         # Charts + tables
