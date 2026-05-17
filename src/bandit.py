@@ -46,10 +46,6 @@
 #     Funder Type:         NIH or Government
 #     Collaborators:       Academic or NIH
 #
-# NOTE: Delta values are heuristic estimates. Replace
-#   _FIELD_DELTA with empirically derived expected CDR gains
-#   once CDR distributions by design field are computed from
-#   training data.
 # ============================================================
 
 # Target values associated with higher CDR scores.
